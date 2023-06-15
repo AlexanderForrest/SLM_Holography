@@ -121,7 +121,7 @@ class SLM_DPixel(object):
     
     """
     
-    def __init__(self, x_pixels, y_pixels, x_dim, y_dim, wavelength, e_diam, focal_length = 1 * u.mm, radian_shift = 4*np.pi, only_in_e_diam = True):
+    def __init__(self, x_pixels, y_pixels, x_dim, y_dim, wavelength, e_diam, focal_length = 1 * u.mm, radian_shift = 4*np.pi, only_in_e_diam = True, pix_per_super = 2, less_than_2pi = False):
         """
         
 
@@ -145,15 +145,23 @@ class SLM_DPixel(object):
             The maximum phase shift that the SLM can produce, from [0,radian_shoft]. The default is 4*np.pi.
         only_in_e_diam : bool, optional
             If true, the SLM array is truncated to only be the same width and height as the e_diam. The default is True.
-
+        pix_per_super : int, multiple of 2, optional
+            The number of pixels per super pixel.  original is 2, or a 2x2 superpixel
+            
         Returns
         -------
         None.
 
         """
         
-        self.pixels_x_orig = x_pixels//2
-        self.pixels_y_orig = y_pixels//2
+        if pix_per_super < 2 and pix_per_super % 2 != 0:
+            raise Exception("pix per super needs to be greater than 2 and a multiple of 2")
+        
+        self.total_x_pixels = x_pixels
+        self.total_y_pixels = y_pixels
+        
+        self.pixels_x_orig = x_pixels//pix_per_super + 1
+        self.pixels_y_orig = y_pixels//pix_per_super + 1
         self.x_dim_orig = x_dim.to(u.m).value
         self.y_dim_orig = y_dim.to(u.m).value
         self.focal_length = focal_length.to(u.m).value
@@ -161,8 +169,16 @@ class SLM_DPixel(object):
         self.wavelength = wavelength.to(u.m).value
         self.e_diam = e_diam.to(u.m).value
         self.only_in_e_diam = only_in_e_diam
+        self.pix_per_super = pix_per_super
+        
+        self.less_than_2pi = less_than_2pi
+        
+        if self.radian_shift < 2 * np.pi:
+            print('The total phase shift possible is less than 2 pi, so the total phase range available is: ' + str((self.radian_shift - np.pi) / np.pi) + 'pi')
+            self.less_than_2pi = True
         
         self.padding_added = None
+        self.shift_super_pixel_array = True
         
         self.x_pixscale = x_dim.to(u.m).value/self.pixels_x_orig
         self.y_pixscale = y_dim.to(u.m).value/self.pixels_y_orig
@@ -177,8 +193,8 @@ class SLM_DPixel(object):
             self.pixels_x = int(self.dim_x_ratio * self.pixels_x_orig)
             self.pixels_y = int(self.dim_y_ratio * self.pixels_y_orig)
             
-            self.pixels_x_remainder = self.pixels_x_orig - self.pixels_x
-            self.pixels_y_remainder = self.pixels_y_orig - self.pixels_y
+            self.pixels_x_remainder = self.pixels_x_orig - self.pixels_x + 1
+            self.pixels_y_remainder = self.pixels_y_orig - self.pixels_y + 1
 
         else:
             self.x_dim = self.x_dim_orig
@@ -191,27 +207,40 @@ class SLM_DPixel(object):
         self.SLM_phase = np.zeros([self.pixels_y, self.pixels_x])
         self.SLM_encoded = np.empty([y_pixels, x_pixels])
     
-    def AddPadding(self):
+    
+    def AddPadding(self, ampl_values = 0, phase_values = 0, verbose = False):
         """
-        If only_in_e_diam = True, then it pads the truncated array to return the Array to the SLM's original dimensions.      
-        
+        If the array is only in the e_diam, it adds the padding to make it the correct dimensions
+
+        Parameters
+        ----------
+        ampl_values : float, [0,1], optional
+            What value to pad the amplitude array with. The default is 0.
+        phase_values : float, [0,1], optional
+            What value to pad the phase array with. The default is 0.
+        verbose : Bool, optional
+            Wether to output if the padding has already been added or not. The default is False.
+
         Returns
         -------
         None.
 
         """
+        
         if self.padding_added == True:
-            print("padding has already been added back to the SLM")
+            if verbose:    
+                print("padding has already been added back to the SLM")
         elif self.only_in_e_diam == False:
-            print("Padding can't be added to an array that is already the SLM dimensions")
+            if verbose:
+                print("Padding can't be added to an array that is already the SLM dimensions")
         else:
             left   = self.pixels_x_remainder//2
             right  = self.pixels_x_remainder//2 + self.pixels_x_remainder%2
             top    = self.pixels_y_remainder//2
             bottom = self.pixels_y_remainder//2 + self.pixels_y_remainder%2
             
-            self.SLM_ampl = np.pad(self.SLM_ampl, ((top, bottom), (left, right)), constant_values = 0)
-            self.SLM_phase = np.pad(self.SLM_phase, ((top, bottom), (left, right)), constant_values = 0)
+            self.SLM_ampl = np.pad(self.SLM_ampl, ((top, bottom), (left, right)), constant_values = ampl_values)
+            self.SLM_phase = np.pad(self.SLM_phase, ((top, bottom), (left, right)), constant_values = phase_values)
             
             self.padding_added = True
             
@@ -235,23 +264,47 @@ class SLM_DPixel(object):
         self.SLM_phase[self.SLM_phase < 0] = 0
         self.SLM_ampl[self.SLM_ampl < 0] = 0
         
-        self.SLM_phase_norm = (self.radian_shift - np.pi)*self.SLM_phase + (.5*np.pi)
         
-        for i in range(len(self.SLM_ampl)):
-            for j in range(len(self.SLM_ampl[i])):
-                
-                phase_diff = np.arccos(self.SLM_ampl[i,j])
-                
-                phase_pos = self.SLM_phase_norm[i,j] + phase_diff
-                phase_neg = self.SLM_phase_norm[i,j] - phase_diff
-                
-                self.SLM_encoded[2*i, 2*j] = phase_pos
-                self.SLM_encoded[2*i + 1, 2*j] = phase_neg
-                self.SLM_encoded[2*i + 1, 2*j + 1] = phase_pos
-                self.SLM_encoded[2*i, 2*j + 1] = phase_neg
-                
+        if self.less_than_2pi:    
+            self.SLM_phase_norm = (self.radian_shift - np.pi)*self.SLM_phase + (.5*np.pi)
+        else:
+            self.SLM_phase_norm = (self.radian_shift)*self.SLM_phase # + (.5*np.pi)
+
+        
+        SLM_kron_scale = np.ones((self.pix_per_super, self.pix_per_super), dtype = 'bool')
+        
+        SLM_phase_kron = np.kron(self.SLM_phase_norm, SLM_kron_scale)
+        SLM_ampl_kron = np.kron(self.SLM_ampl, SLM_kron_scale)
+        
+        SLM_phase_trimmed = SLM_phase_kron[0:self.total_y_pixels, 0:self.total_x_pixels]
+        SLM_ampl_trimmed = SLM_ampl_kron[0:self.total_y_pixels, 0:self.total_x_pixels]
+        
+        kron_scale = np.ones((self.pix_per_super//2, self.pix_per_super//2), dtype = 'bool')
+        base_indices = np.array([[True,False], [False,True]], dtype = 'bool')
+        
+        scaled_indices = np.kron(base_indices, kron_scale)
+        
+        scale_tile_x = self.total_x_pixels // (self.pix_per_super) + 1
+        scale_tile_y = self.total_y_pixels // (self.pix_per_super) + 1
+
+        tiled_array = np.tile(scaled_indices, (scale_tile_y, scale_tile_x))
+
+        final_indices = tiled_array[0:self.total_y_pixels, 0:self.total_x_pixels]
+        
+        if self.shift_super_pixel_array == False:
+            SLM_ampl_trimmed = np.roll(SLM_ampl_trimmed, (self.x_shift, self.y_shift), axis = (1, 0))
+            SLM_phase_trimmed = np.roll(SLM_phase_trimmed, (self.x_shift, self.y_shift), axis = (1, 0))
+            final_indices = np.roll(final_indices, (self.x_shift, self.y_shift), axis = (1, 0))
+        
+        self.SLM_encoded[final_indices] = SLM_phase_trimmed[final_indices] + np.arccos(SLM_ampl_trimmed[final_indices])
+        self.SLM_encoded[final_indices == False] = SLM_phase_trimmed[final_indices == False] - np.arccos(SLM_ampl_trimmed[final_indices == False])
+        
+        if self.less_than_2pi == False:
+            self.SLM_encoded[self.SLM_encoded < 0] += int(self.radian_shift / (2*np.pi)) * 2 * np.pi
+            self.SLM_encoded[self.SLM_encoded > self.radian_shift] -= int(self.radian_shift / (2*np.pi)) * 2 * np.pi
+            
         return self.SLM_encoded
-                
+    
     def GaussianAmpl(self, a, b_x, b_y, c_x, c_y):
         """
         A method to add a goussian to the amplitude (SLM_ampl) using the equation 
@@ -275,6 +328,8 @@ class SLM_DPixel(object):
         None.
 
         """
+        x_grid, y_grid = np.mgrid[0:self.pixels_y, 0:self.pixels_x]
+        
         for i in range(len(self.SLM_ampl)):
             for j in range(len(self.SLM_ampl[i])):
                 self.SLM_ampl[i,j] += a*np.exp((-(i - b_y)**2/c_y) - ((j - b_x)**2/c_x))
@@ -493,24 +548,32 @@ class SLM_DPixel(object):
         self.SLM_ampl = np.zeros([self.pixels_y, self.pixels_x])
         self.SLM_phase = np.zeros([self.pixels_y, self.pixels_x])
         
-    def ImageShift(self, x_shift, y_shift):
+    def ImageShift(self, x_shift, y_shift, shift_super_pixel_array = True):
         """
         Rolls the image a number of pixels in the x and y directions
 
         Parameters
         ----------
         x_shift : int
-            The number of double pixels to roll the SLM_ampl and SLM_phase in the x direction (positive is to the left, negative is to the right).
+            The number of pixels to roll the SLM_ampl and SLM_phase in the x direction (positive is to the left, negative is to the right).
         y_shift : int
-            The number of double pixels to roll the SLM_ampl and SLM_phase in the x direction (positive is to the left, negative is to the right).
+            The number of pixels to roll the SLM_ampl and SLM_phase in the x direction (positive is to the left, negative is to the right).
+        shift_super_pixel_array: Bool, Optional
+            Shifts the super pixel array if True, and shifts the SLM pixel array if False.  This adjusts whether x_shift and y_shift are in super pixel scale or in SLM pixel scale
 
         Returns
         -------
         None.
 
         """
-        self.SLM_ampl = np.roll(self.SLM_ampl, (x_shift, y_shift), axis = (1, 0))
-        self.SLM_phase = np.roll(self.SLM_phase, (x_shift, y_shift), axis = (1, 0))
+        self.shift_super_pixel_array = shift_super_pixel_array
+        self.x_shift = x_shift
+        self.y_shift = y_shift
+        
+        if shift_super_pixel_array:
+            self.SLM_ampl = np.roll(self.SLM_ampl, (x_shift, y_shift), axis = (1, 0))
+            self.SLM_phase = np.roll(self.SLM_phase, (x_shift, y_shift), axis = (1, 0))
+        
         
     def ZernikeTerms(self, j_list, j_scaling):
         """
@@ -529,12 +592,15 @@ class SLM_DPixel(object):
 
         """
         
-        if len(j_list) != len(j_scaling):
+        
+        if type(j_list) != 'list' and type(j_scaling) != 'list':
+            pass
+        elif len(j_list) > len(j_scaling):
             print("The number of indices and scaling factors don't match. Will add additional scaling factors of 1 if indix list is longer.  Will ignore additional scaling factors")
-
-        if len(j_list) > len(j_scaling):
             diff = len(j_list) - len(j_scaling)
             j_scaling.extend([1] * diff)
+        elif len(j_list) < len(j_scaling):
+            print("The number of indices and scaling factors don't match. Will add additional scaling factors of 1 if indix list is longer.  Will ignore additional scaling factors")
         
         # This section sizes the zernike array to the diameter of the pupil
         if self.pixels_x <= self.pixels_y:
@@ -550,23 +616,29 @@ class SLM_DPixel(object):
         FinalZernikeArray = np.full((pixels, pixels), 2 * np.pi)
 
         for i in range(len(j_list)):
-            FinalZernikeArray += j_scaling[i] * poppy.zernike.zernike1(j_list[i], npix = pixels)
+            FinalZernikeArray += j_scaling[i] * poppy.zernike.zernike1(j_list[i], npix = pixels, noll_normalize=False)
            
-        FinalZernikeArray = np.nan_to_num(FinalZernikeArray, nan = 1/2 * np.pi)
+        FinalZernikeArray = np.nan_to_num(FinalZernikeArray, nan = np.nanmin(FinalZernikeArray))
         FinalZernikeArray = np.pad(FinalZernikeArray, ((remainder_top, remainder_bottom),(remainder_left, remainder_right)), constant_values = 1/2 * np.pi)
         
+        zernikeMin = FinalZernikeArray.min()
+        
+        FinalZernikeArray -= zernikeMin
+        
+        """
         zernikeMax = FinalZernikeArray.max()
         zernikeMin = FinalZernikeArray.min()
         
-        while zernikeMax >= 3 * np.pi and zernikeMin <= 0 * np.pi:
+        while zernikeMax >= 2 * np.pi and zernikeMin < 0 * np.pi:
             zernikeMax = FinalZernikeArray.max()
             zernikeMin = FinalZernikeArray.min()
             
-            FinalZernikeArray[FinalZernikeArray >= 3 * np.pi] -= 2*np.pi
-            FinalZernikeArray[FinalZernikeArray <= 0] += 2*np.pi
-               
-        FinalZernikeArray += 0.5 * np.pi
-        ScaledZernike = (FinalZernikeArray) / (3 * np.pi)
+            FinalZernikeArray[FinalZernikeArray >= 2 * np.pi] -= 2*np.pi
+            FinalZernikeArray[FinalZernikeArray < 0] += 2*np.pi
+        
+        """
+        #FinalZernikeArray += 0.5 * np.pi
+        ScaledZernike = (FinalZernikeArray) / (2 * np.pi)
         
         self.SLM_phase = ScaledZernike
             
@@ -605,14 +677,17 @@ class SLM_DPixel(object):
 
         """
         
+        if self.radian_shift < 2 * np.pi: # and self.radian_shift != 2 * np.pi:
+            raise Exception('the total phase shift of the SLM is not enough to create a focal plane image')
+        
         x_FA_dim = (1 * self.wavelength) / PSF_pixscale_x.to(u.rad).value# * len(FocalArray[0])) #* self.focal_length
         y_FA_dim = (1 * self.wavelength) / PSF_pixscale_y.to(u.rad).value# * len(FocalArray)) #* self.focal_length
         
         FA_pixscale_x = x_FA_dim / len(FocalArray[0])
         FA_pixscale_y = y_FA_dim / len(FocalArray)
         
-        SLM_PSF_pixscale_x = np.arcsin((1.22 * self.wavelength) / self.x_dim)#.to(u.rad).value
-        SLM_PSF_pixscale_y = np.arcsin((1.22 * self.wavelength) / self.y_dim)#.to(u.rad).value
+        SLM_PSF_pixscale_x = (self.wavelength) / self.x_dim#.to(u.rad).value
+        SLM_PSF_pixscale_y = (self.wavelength) / self.y_dim#.to(u.rad).value
         
         x_PSF_scale = PSF_pixscale_x.to(u.rad).value / SLM_PSF_pixscale_x
         y_PSF_scale = PSF_pixscale_y.to(u.rad).value / SLM_PSF_pixscale_y
@@ -621,30 +696,29 @@ class SLM_DPixel(object):
         y_SLM_scale = FA_pixscale_y / self.y_pixscale
         
         
-        # I'm not certain if the following is needed or not(or if its even done correctly), 
-        #but it is getting commeneted out for now so I don't forget/lose it
-
-        #if self.x_dim - x_FA_dim >=0: 
-        #    x_over = self.x_dim - x_FA_dim
-        #    x_pad = int(x_over/FA_pixscale_x) + 1
-        #else: 
-        #    x_over = 0
-        #    x_pad = 0
-        #
-        #if self.y_dim - y_FA_dim >=0: 
-        #    y_over = self.y_dim - y_FA_dim
-        #    y_pad = int(y_over/FA_pixscale_y) + 1
-        #else: 
-        #    y_over = 0
-        #    y_pad = 0
-        #
-        #if x_over + y_over > 0:
-        #    FocalArray = np.pad(FocalArray, ((y_pad, y_pad),(x_pad, x_pad)), constant_values=0)
-        #
-        #if x_PSF_scale >= 1 or y_PSF_scale >=1:
-        #    resized_transform_real = rescale(FocalArray.real, (y_PSF_scale, x_PSF_scale))
-        #    resized_transform_imag = rescale(FocalArray.imag, (y_PSF_scale, x_PSF_scale))
-        #    FocalArray = resized_transform_real + resized_transform_imag*1j
+        if self.x_dim - x_FA_dim >=0: 
+            x_over = self.x_dim - x_FA_dim
+            x_pad = int(x_over/FA_pixscale_x) + 1
+        else: 
+            x_over = 0
+            x_pad = 0
+        
+        if self.y_dim - y_FA_dim >=0: 
+            y_over = self.y_dim - y_FA_dim
+            y_pad = int(y_over/FA_pixscale_y) + 1
+        else: 
+            y_over = 0
+            y_pad = 0
+        
+        if x_over + y_over > 0:
+            print('cropping')
+            FocalArray = np.pad(FocalArray, ((y_pad, y_pad),(x_pad, x_pad)), constant_values=0)
+        
+        if x_PSF_scale >= 1 or y_PSF_scale >=1:
+            print('rescaling')
+            resized_transform_real = rescale(FocalArray.real, (y_PSF_scale, x_PSF_scale))
+            resized_transform_imag = rescale(FocalArray.imag, (y_PSF_scale, x_PSF_scale))
+            FocalArray = resized_transform_real + resized_transform_imag*1j
             
             #cnt_y = FocalArray.shape[0]//2
             #cnt_x = FocalArray.shape[1]//2
@@ -653,29 +727,83 @@ class SLM_DPixel(object):
             #top = cnt_y+int((self.pixels_y//2))
             #left = cnt_x-int((self.pixels_x//2))
             #right = cnt_x+int((self.pixels_x//2))
-
+            
+        #else:
+            #cnt_y = FocalArray.shape[0]//2
+            #cnt_x = FocalArray.shape[1]//2
+            
+            #bottom = cnt_y-int((self.pixels_y//2)//y_scale)
+            #top = cnt_y+int((self.pixels_y//2)//y_scale)
+            #left = cnt_x-int((self.pixels_x//2)//x_scale)
+            #right = cnt_x+int((self.pixels_x//2)//x_scale)
         
+        #print(bottom)
+        #print(top)
+        #print(left)
+        #print(right)
         
-        FocalArray = np.fft.fftshift(FocalArray)
-        transform = fft.fft2(FocalArray)
-        transformRolled = np.roll(transform, (len(transform)//2, len(transform[0])//2), axis = (1, 0))
+        #FocalArray = FocalArray[bottom:top, left:right]
+        
+        """
+        #fig1
+        plt.figure()
+        plt.title('1st plot in focal plane code')
+        plt.imshow(np.abs(FocalArray))
+        plt.show()
+        """
+        #center_ft = FocalArray.shape
+        
+        FocalArray_rolled = np.fft.fftshift(FocalArray) #, shift = ((center_ft[0] -  1)//2, (center_ft[1] -  1)//2), axis = (0,1))
+        transform = fft.fft2(FocalArray_rolled)
+        transformRolled = np.fft.fftshift(transform)#, shift = (-(center_ft[0] -  1)//2, -(center_ft[1] -  1)//2), axis = (0,1))
+        
+        """
+        plt.figure()
+        plt.title('FocalArray rolled in focal plane code')
+        plt.imshow(np.abs(FocalArray_rolled))
+        plt.show()
+        """
+        #fig2
+        #plt.figure()
+        #plt.imshow(np.abs(transformRolled))
+        #plt.show()
+        
+        #plt.figure()
+        #plt.imshow(np.angle(transformRolled), cmap = "twilight")
+        #plt.show()
         
         resized_transform_real = rescale(transformRolled.real, (y_SLM_scale, x_SLM_scale))
         resized_transform_imag = rescale(transformRolled.imag, (y_SLM_scale, x_SLM_scale))
         resized_transform = resized_transform_real + resized_transform_imag*1j
-            
+        """
+        plt.figure()
+        plt.title('2nd plot in focal plane code')
+        plt.imshow(np.abs(transformRolled))
+        plt.show()
+        """
+        cnt_y = resized_transform.shape[0]/2 - 0.5
+        cnt_x = resized_transform.shape[1]/2 - 0.5
         
-        cnt_y = resized_transform.shape[0]//2
-        cnt_x = resized_transform.shape[1]//2
+        #print(cnt_y)
+        #print(cnt_x)
         
-        bottom = cnt_y-self.pixels_y//2
-        top = cnt_y+self.pixels_y//2
-        left = cnt_x-self.pixels_x//2
-        right = cnt_x+self.pixels_x//2
+        bottom = int(cnt_y-self.pixels_y/2) + 2
+        top = int(cnt_y+self.pixels_y/2) + 2
+        left = int(cnt_x-self.pixels_x/2) + 2
+        right = int(cnt_x+self.pixels_x/2) + 2
+        
+        #print(bottom)
+        #print(top)
+        #print(self.pixels_y)
         
         input_field = resized_transform[bottom:top, left:right]
-        
-        
+        """
+        #fig3
+        plt.figure()
+        plt.title('3rd plot in focal plane code')
+        plt.imshow(np.abs(input_field))
+        plt.show()
+        """
         self.transformAmpl = np.abs(input_field)
         self.transformPhase = np.angle(input_field)
         
@@ -683,12 +811,34 @@ class SLM_DPixel(object):
         transformedAmplMin = self.transformAmpl.min()
         
         ScaledTransformedAmpl = (self.transformAmpl - transformedAmplMin) / (transformedAmplMax - transformedAmplMin)
+        """
+        for i in range(len(self.transformPhase)):
+            for j in range(len(self.transformPhase[0])):
+                
+                if (i+j)%2 == 1 and self.transformPhase[i,j] < 0:
+                    self.transformPhase[i,j] += np.pi
+                    
+                elif (i+j)%2 == 1 and self.transformPhase[i,j] > 0:
+                    self.transformPhase[i,j] -= np.pi
+        """
         
         self.transformPhase += 1 * np.pi
-        self.transformPhase /= 3 * np.pi
+        if self.less_than_2pi:
+            self.transformPhase /= (self.radian_shift - np.pi)
+        else:
+            self.transformPhase /= (self.radian_shift)
+        
+        """
+        if self.radian_shift == 2*np.pi:
+            self.transformPhase[self.transformPhase > np.pi] == - self.transformPhase[self.transformPhase > np.pi] + 2 * np.pi
+        """
         
         self.SLM_ampl = ScaledTransformedAmpl
         self.SLM_phase = self.transformPhase
+        #fig4
+        #figure = plt.figure()
+        #plt.imshow(self.SLM_ampl)
+        #plt.show()
 
         
     #def StatisticalPSDWFE(self, wavelength, index, diameter):
@@ -710,8 +860,35 @@ class SLM_DPixel(object):
     #
     #    """
     #    pass
-
-    def LPModeEncoding(self, N_modes, el, m, n_core, n_cladding, make_odd = False, oversample = 1):
+    
+    def CheckerboardPhaseOnly(self, num_pixels_merged, phaseoffset_max, phaseoffset_min = 0):
+        
+        self.FlatPhase(0)
+        
+        base_array = np.array([[True,False], [False,True]], dtype = 'bool')
+        kron_scale = np.ones((num_pixels_merged, num_pixels_merged), dtype = 'bool')
+        scaled_kron = np.kron(base_array, kron_scale)
+        
+        y_len = 2 * self.pixels_y//num_pixels_merged + 1
+        x_len = 2 * self.pixels_x//num_pixels_merged + 1
+        
+        tiled_array = np.tile(scaled_kron, (y_len, x_len))
+        array_indices = tiled_array[0:self.pixels_y, 0:self.pixels_x]
+        
+        
+        if self.less_than_2pi:
+            self.SLM_phase[array_indices] = phaseoffset_max / (self.radian_shift - np.pi)
+            self.SLM_phase[array_indices == False] = phaseoffset_min / (self.radian_shift - np.pi)
+        
+        else:
+            self.SLM_phase[array_indices] = phaseoffset_max / (self.radian_shift)# - np.pi)
+            self.SLM_phase[array_indices == False] = phaseoffset_min / (self.radian_shift)# - np.pi)
+        
+    def horizontal_sine_wave(self, wavelength_vs_width):
+        pass
+    
+    
+    def LPModeEncoding(self, N_modes, el, m, n_core, n_cladding, make_odd = False, oversample = 3, oversize = 1):
         """
         A method to encode specific LP modes into the PSF assuming a lens with focal length focal_length.
 
@@ -745,26 +922,31 @@ class SLM_DPixel(object):
         b = ofiber.LP_mode_value(V, el, m)
         
         
-        self.Amplitude = np.zeros((int(ovsp*self.pixels_y),int(ovsp*self.pixels_x)))
-        self.Phase = np.zeros((int(ovsp*self.pixels_y),int(ovsp*self.pixels_x)))
+        self.Amplitude = np.zeros((int(oversize*ovsp*self.pixels_y),int(oversize*ovsp*self.pixels_x)))
+        self.Phase = np.zeros((int(oversize*ovsp*self.pixels_y),int(oversize*ovsp*self.pixels_x)))
 
-        center_x = (ovsp*self.pixels_x)/2
-        center_y = (ovsp*self.pixels_y)/2 
+        center_x = (oversize*ovsp*self.pixels_x - 1)/2
+        center_y = (oversize*ovsp*self.pixels_y - 1)/2
         
-        x_linspace = np.linspace(0, int(ovsp*self.pixels_x)-1, int(ovsp*self.pixels_x))
-        y_linspace = np.linspace(0, int(ovsp*self.pixels_y)-1, int(ovsp*self.pixels_y))
+        x_linspace = np.linspace(0, int(oversize*ovsp*self.pixels_x), int(oversize*ovsp*self.pixels_x), endpoint=False)
+        y_linspace = np.linspace(0, int(oversize*ovsp*self.pixels_y), int(oversize*ovsp*self.pixels_y), endpoint=False)
         
         xx, yy = np.meshgrid(x_linspace, y_linspace)
         
-        x_scale = (xx - center_x) * self.x_pixscale/(50 *ovsp)
+        x_scale = (xx - center_x) * self.focal_length * np.tan(self.wavelength/(self.x_dim * 10 * ovsp))
         
-        y_scale = (yy - center_y) * self.y_pixscale/(50 * ovsp)
-            
+        y_scale = (yy - center_y) * self.focal_length * np.tan(self.wavelength/(self.y_dim * 10 * ovsp))
+        
         r = np.sqrt(x_scale**2 + y_scale**2)
         phi = np.arctan2(y_scale, x_scale)
         
         r_over_a = r/self.a
-        
+        """
+        plt.figure()
+        plt.title('radius from center?')
+        plt.imshow(r_over_a)
+        plt.show()
+        """
         if make_odd: important_bits = ofiber.LP_radial_field(V, b, el, r_over_a) * np.sin(el * phi)
         else: important_bits = ofiber.LP_radial_field(V, b, el, r_over_a) * np.cos(el * phi)
         
@@ -773,15 +955,17 @@ class SLM_DPixel(object):
         self.Phase[important_bits >= 0] = np.pi
           
         self.Amplitude /= np.sqrt(np.sum(self.Amplitude**2))
-        
-        plt.figure(10)
+        """
+        plt.figure()
+        plt.title('original in LP encoding code')
         plt.imshow(self.Amplitude)
         plt.show()
         
-        fourier_encode = self.Amplitude * np.exp(1j * self.Phase)
+        """
+        self.fourier_encode = self.Amplitude * np.exp(1j * self.Phase)
         
-        pixscale_x = np.arctan(self.x_pixscale / (50 * ovsp * self.focal_length)) * u.rad
-        pixscale_y = np.arctan(self.y_pixscale / (50 * ovsp * self.focal_length)) * u.rad
+        pixscale_x = self.wavelength/(self.x_dim * 10 * ovsp) * u.rad
+        pixscale_y = self.wavelength/(self.y_dim * 10 * ovsp) * u.rad
         
-        self.FocalPlaneImage(fourier_encode, pixscale_x, pixscale_y)
+        self.FocalPlaneImage(self.fourier_encode, pixscale_x, pixscale_y)
             

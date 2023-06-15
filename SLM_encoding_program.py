@@ -203,7 +203,7 @@ class SLM_DPixel(object):
             self.pixels_x = self.pixels_x_orig
             self.pixels_y = self.pixels_x_orig
             
-        self.SLM_ampl = np.zeros([self.pixels_y, self.pixels_x])
+        self.SLM_ampl = np.ones([self.pixels_y, self.pixels_x])
         self.SLM_phase = np.zeros([self.pixels_y, self.pixels_x])
         self.SLM_encoded = np.empty([y_pixels, x_pixels])
     

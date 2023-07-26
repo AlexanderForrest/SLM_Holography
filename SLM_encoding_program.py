@@ -174,7 +174,7 @@ class SLM_DPixel(object):
         self.less_than_2pi = less_than_2pi
         
         if self.radian_shift < 2 * np.pi:
-            print('The total phase shift possible is less than 2 pi, so the total phase range available is: ' + str((self.radian_shift - np.pi) / np.pi) + 'pi')
+            raise Exception('The total phase shift possible is less than 2 pi, so the total phase range available is: ' + str((self.radian_shift - np.pi) / np.pi) + 'pi')
             self.less_than_2pi = True
         
         self.padding_added = None
@@ -258,22 +258,24 @@ class SLM_DPixel(object):
         
         self.AddPadding()
         
-        self.SLM_phase[self.SLM_phase > 1] = 1
         self.SLM_ampl[self.SLM_ampl > 1] = 1
         
-        self.SLM_phase[self.SLM_phase < 0] = 0
         self.SLM_ampl[self.SLM_ampl < 0] = 0
         
         
         if self.less_than_2pi:    
-            self.SLM_phase_norm = (self.radian_shift - np.pi)*self.SLM_phase + (.5*np.pi)
+            
+            self.SLM_phase[self.SLM_phase > (self.radian_shift - .5*np.pi)] = (self.radian_shift - .5*np.pi)
+            self.SLM_phase[self.SLM_phase < 0] = 0
         else:
-            self.SLM_phase_norm = (self.radian_shift)*self.SLM_phase # + (.5*np.pi)
+            
+            self.SLM_phase[self.SLM_phase > (self.radian_shift)] = (self.radian_shift)
+            self.SLM_phase[self.SLM_phase < 0] = 0
 
         
         SLM_kron_scale = np.ones((self.pix_per_super, self.pix_per_super), dtype = 'bool')
         
-        SLM_phase_kron = np.kron(self.SLM_phase_norm, SLM_kron_scale)
+        SLM_phase_kron = np.kron(self.SLM_phase, SLM_kron_scale)
         SLM_ampl_kron = np.kron(self.SLM_ampl, SLM_kron_scale)
         
         SLM_phase_trimmed = SLM_phase_kron[0:self.total_y_pixels, 0:self.total_x_pixels]
@@ -374,14 +376,14 @@ class SLM_DPixel(object):
         
     def RandomPhase(self):
         """
-        A method to set each double pixel to a random value between [0,1] in SLM_ampl
+        A method to set each double pixel to a random value between [0,self.radian_shift] in SLM_ampl
 
         Returns
         -------
         None.
 
         """
-        self.SLM_phase += np.random.rand(self.pixels_y, self.pixels_x)
+        self.SLM_phase += self.radian_shift * np.random.rand(self.pixels_y, self.pixels_x)
         
     def InterpolateRandomAmpl(self, num_points, neighbors):
         """
@@ -638,7 +640,7 @@ class SLM_DPixel(object):
         
         """
         #FinalZernikeArray += 0.5 * np.pi
-        ScaledZernike = (FinalZernikeArray) / (2 * np.pi)
+        ScaledZernike = (FinalZernikeArray)
         
         self.SLM_phase = ScaledZernike
             
@@ -658,7 +660,7 @@ class SLM_DPixel(object):
         """
         self.SLM_phase += np.full((self.pixels_y, self.pixels_x), n)
         
-    def FocalPlaneImage(self, FocalArray, PSF_pixscale_x, PSF_pixscale_y):
+    def FocalPlaneImage(self, FocalArray, PSF_pixscale_x, PSF_pixscale_y, max_or_set_intensity = False, *args):
         """
         A method to encode a certain Focal array into the SLM_ampl and SLM_phase
 
@@ -670,7 +672,10 @@ class SLM_DPixel(object):
             The scale of each pixel in the x direction (ONLY in units u.radians or convertable, NOT u.radians/u.pixels).
         PSF_pixscale_y : astropy.units.Quantity, convertable to radians
             The scale of each pixel in the x direction (ONLY in units u.radians or convertable, NOT u.radians/u.pixels).
-
+        max_or_set_intensity : bool, optional
+            Whether or not to scale the total intensity to the maximum possible (False), or to the requested intensity (True)
+        max_intensity : float, optional
+            The total intenisty requested in the focal plane
         Returns
         -------
         None.
@@ -755,7 +760,15 @@ class SLM_DPixel(object):
         
         FocalArray_rolled = np.fft.fftshift(FocalArray) #, shift = ((center_ft[0] -  1)//2, (center_ft[1] -  1)//2), axis = (0,1))
         transform = fft.fft2(FocalArray_rolled)
+        total_intensity = transform[0,0]
         transformRolled = np.fft.fftshift(transform)#, shift = (-(center_ft[0] -  1)//2, -(center_ft[1] -  1)//2), axis = (0,1))
+        
+        if max_or_set_intensity:
+            intensity_scale =  args[0] / total_intensity
+            if intensity_scale >= 1:
+                raise Exception("The total intensity requested is greater than the total intensity present in the focal plane")
+        else:
+            intensity_scale = 1
         
         """
         plt.figure()
@@ -810,7 +823,7 @@ class SLM_DPixel(object):
         transformedAmplMax = self.transformAmpl.max()
         transformedAmplMin = self.transformAmpl.min()
         
-        ScaledTransformedAmpl = (self.transformAmpl - transformedAmplMin) / (transformedAmplMax - transformedAmplMin)
+        ScaledTransformedAmpl = intensity_scale * (self.transformAmpl - transformedAmplMin) / (transformedAmplMax - transformedAmplMin)
         """
         for i in range(len(self.transformPhase)):
             for j in range(len(self.transformPhase[0])):
@@ -823,10 +836,6 @@ class SLM_DPixel(object):
         """
         
         self.transformPhase += 1 * np.pi
-        if self.less_than_2pi:
-            self.transformPhase /= (self.radian_shift - np.pi)
-        else:
-            self.transformPhase /= (self.radian_shift)
         
         """
         if self.radian_shift == 2*np.pi:
@@ -876,16 +885,8 @@ class SLM_DPixel(object):
         array_indices = tiled_array[0:self.pixels_y, 0:self.pixels_x]
         
         
-        if self.less_than_2pi:
-            self.SLM_phase[array_indices] = phaseoffset_max / (self.radian_shift - np.pi)
-            self.SLM_phase[array_indices == False] = phaseoffset_min / (self.radian_shift - np.pi)
-        
-        else:
-            self.SLM_phase[array_indices] = phaseoffset_max / (self.radian_shift)# - np.pi)
-            self.SLM_phase[array_indices == False] = phaseoffset_min / (self.radian_shift)# - np.pi)
-        
-    def horizontal_sine_wave(self, wavelength_vs_width):
-        pass
+        self.SLM_phase[array_indices] = phaseoffset_max
+        self.SLM_phase[array_indices == False] = phaseoffset_min
     
     
     def LPModeEncoding(self, N_modes, el, m, n_core, n_cladding, make_odd = False, oversample = 3, oversize = 1):
@@ -968,4 +969,37 @@ class SLM_DPixel(object):
         pixscale_y = self.wavelength/(self.y_dim * 10 * ovsp) * u.rad
         
         self.FocalPlaneImage(self.fourier_encode, pixscale_x, pixscale_y)
+        
+    def focal_spot(self, central_spot_power, left_spot_power, right_spot_power, spacing, rotation):
+        
+        Y, X = np.mgrid[-self.pixels_y/2:self.pixels_y/2, self.pixels_x/2:self.pixels_x/2]
+        
+        Xr = np.cos(rotation / 180 * np.pi) * X + np.sin(rotation / 180 * np.pi) * Y
+        
+        period = self.pixels_x / spacing
+        
+        im_c = left_spot_power * np.exp(-1j * 2 * np.pi / period * Xr) + \
+               right_spot_power * np.exp(1j * 2 * np.pi / period * Xr) + central_spot_power
+               
+               
+        self.Amplitude = np.abs(im_c)
+        self.Phase = np.angle(im_c)
+    
+    def focal_spots_multiple(self, central_spot_power, left_spot_power, right_spot_power, spacing, rotation):
+        
+        im_c = np.zeros(self.pixels_y, self.pixels_x)
+        
+        for i in range(central_spot_power):
+            Y, X = np.mgrid[-self.pixels_y//2:self.pixels_y//2, self.pixels_x//2:self.pixels_x//2]
+            
+            Xr = np.cos(rotation / 180 * np.pi) * X + np.sin(rotation / 180 * np.pi) * Y
+            
+            period = self.pixels_x / spacing
+            
+            im_c += left_spot_power * np.exp(-1j * 2 * np.pi / period * Xr) + \
+                   right_spot_power * np.exp(1j * 2 * np.pi / period * Xr) + central_spot_power
+                   
+                   
+        self.Amplitude = np.abs(im_c)
+        self.Phase = np.angle(im_c)
             

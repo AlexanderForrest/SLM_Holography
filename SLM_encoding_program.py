@@ -121,7 +121,7 @@ class SLM_DPixel(object):
     
     """
     
-    def __init__(self, x_pixels, y_pixels, x_dim, y_dim, wavelength, e_diam, focal_length = 1 * u.mm, radian_shift = 4*np.pi, only_in_e_diam = True, pix_per_super = 2, less_than_2pi = False):
+    def __init__(self, x_pixels, y_pixels, x_dim, y_dim, wavelength, e_diam_pixels, focal_length = 1 * u.mm, radian_shift = 4*np.pi, only_in_e_diam = True, pix_per_super = 2, less_than_2pi = False):
         """
         
 
@@ -167,7 +167,7 @@ class SLM_DPixel(object):
         self.focal_length = focal_length.to(u.m).value
         self.radian_shift = radian_shift
         self.wavelength = wavelength.to(u.m).value
-        self.e_diam = e_diam.to(u.m).value
+        self.entrance_pixels = e_diam_pixels
         self.only_in_e_diam = only_in_e_diam
         self.pix_per_super = pix_per_super
         
@@ -184,14 +184,14 @@ class SLM_DPixel(object):
         self.y_pixscale = y_dim.to(u.m).value/self.pixels_y_orig
         
         if only_in_e_diam:
-            self.dim_x_ratio = self.e_diam / self.x_dim_orig
-            self.dim_y_ratio = self.e_diam / self.y_dim_orig
+            self.dim_x_ratio = self.entrance_pixels // self.pix_per_super + 1
+            self.dim_y_ratio = self.entrance_pixels // self.pix_per_super + 1
             
-            self.x_dim = self.e_diam
-            self.y_dim = self.e_diam
+            self.x_dim = self.entrance_pixels * self.x_dim_orig / self.total_x_pixels
+            self.y_dim = self.entrance_pixels * self.y_dim_orig / self.total_y_pixels
             
-            self.pixels_x = int(self.dim_x_ratio * self.pixels_x_orig)
-            self.pixels_y = int(self.dim_y_ratio * self.pixels_y_orig)
+            self.pixels_x = int(self.dim_x_ratio)
+            self.pixels_y = int(self.dim_y_ratio)
             
             self.pixels_x_remainder = self.pixels_x_orig - self.pixels_x + 1
             self.pixels_y_remainder = self.pixels_y_orig - self.pixels_y + 1
@@ -205,7 +205,6 @@ class SLM_DPixel(object):
             
         self.SLM_ampl = np.ones([self.pixels_y, self.pixels_x])
         self.SLM_phase = np.zeros([self.pixels_y, self.pixels_x])
-        self.SLM_encoded = np.empty([y_pixels, x_pixels])
     
     
     def AddPadding(self, ampl_values = 0, phase_values = 0, verbose = False):
@@ -244,7 +243,7 @@ class SLM_DPixel(object):
             
             self.padding_added = True
             
-    def DoublePixelConvert(self):
+    def DoublePixelConvert(self, add_padding = True):
         """
         A method that takes the SLM_Ampl and SLM_phase information, and encodes it into
         the SLM_encoded array using the double pixel / super pixel method [WILL ADD CITATION].
@@ -255,8 +254,8 @@ class SLM_DPixel(object):
             Returns a numpy array with the same dimensions as pixels_x_orig and pixels_y_orig.
 
         """
-        
-        self.AddPadding()
+        if add_padding:
+            self.AddPadding()
         
         self.SLM_ampl[self.SLM_ampl > 1] = 1
         
@@ -278,25 +277,40 @@ class SLM_DPixel(object):
         SLM_phase_kron = np.kron(self.SLM_phase, SLM_kron_scale)
         SLM_ampl_kron = np.kron(self.SLM_ampl, SLM_kron_scale)
         
-        SLM_phase_trimmed = SLM_phase_kron[0:self.total_y_pixels, 0:self.total_x_pixels]
-        SLM_ampl_trimmed = SLM_ampl_kron[0:self.total_y_pixels, 0:self.total_x_pixels]
+        if add_padding:
+            self.SLM_encoded = np.empty([self.total_y_pixels, self.total_x_pixels])
+            
+            SLM_phase_trimmed = SLM_phase_kron[0:self.total_y_pixels, 0:self.total_x_pixels]
+            SLM_ampl_trimmed =  SLM_ampl_kron[0:self.total_y_pixels, 0:self.total_x_pixels]
+        else:
+            self.SLM_encoded = np.empty((self.entrance_pixels, self.entrance_pixels))
+            
+            SLM_phase_trimmed = SLM_phase_kron[0:self.entrance_pixels, 0:self.entrance_pixels]
+            SLM_ampl_trimmed =  SLM_ampl_kron[0:self.entrance_pixels, 0:self.entrance_pixels]
         
         kron_scale = np.ones((self.pix_per_super//2, self.pix_per_super//2), dtype = 'bool')
         base_indices = np.array([[True,False], [False,True]], dtype = 'bool')
         
         scaled_indices = np.kron(base_indices, kron_scale)
+        if add_padding:
+            scale_tile_x = self.total_x_pixels // (self.pix_per_super) + 1
+            scale_tile_y = self.total_y_pixels // (self.pix_per_super) + 1
+        else:
+            scale_tile_x = self.dim_x_ratio
+            scale_tile_y = self.dim_y_ratio
         
-        scale_tile_x = self.total_x_pixels // (self.pix_per_super) + 1
-        scale_tile_y = self.total_y_pixels // (self.pix_per_super) + 1
-
         tiled_array = np.tile(scaled_indices, (scale_tile_y, scale_tile_x))
-
-        final_indices = tiled_array[0:self.total_y_pixels, 0:self.total_x_pixels]
+        
+        if add_padding:
+            final_indices = tiled_array[0:self.total_y_pixels, 0:self.total_x_pixels]
+        else:
+            final_indices = tiled_array[0:self.entrance_pixels, 0:self.entrance_pixels]
         
         if self.shift_super_pixel_array == False:
             SLM_ampl_trimmed = np.roll(SLM_ampl_trimmed, (self.x_shift, self.y_shift), axis = (1, 0))
             SLM_phase_trimmed = np.roll(SLM_phase_trimmed, (self.x_shift, self.y_shift), axis = (1, 0))
             final_indices = np.roll(final_indices, (self.x_shift, self.y_shift), axis = (1, 0))
+        
         
         self.SLM_encoded[final_indices] = SLM_phase_trimmed[final_indices] + np.arccos(SLM_ampl_trimmed[final_indices])
         self.SLM_encoded[final_indices == False] = SLM_phase_trimmed[final_indices == False] - np.arccos(SLM_ampl_trimmed[final_indices == False])
@@ -972,7 +986,7 @@ class SLM_DPixel(object):
         
     def focal_spot(self, central_spot_power, left_spot_power, right_spot_power, spacing, rotation):
         
-        Y, X = np.mgrid[-self.pixels_y/2:self.pixels_y/2, self.pixels_x/2:self.pixels_x/2]
+        Y, X = np.mgrid[-self.pixels_y/2:self.pixels_y/2, -self.pixels_x/2:self.pixels_x/2]
         
         Xr = np.cos(rotation / 180 * np.pi) * X + np.sin(rotation / 180 * np.pi) * Y
         
@@ -981,25 +995,33 @@ class SLM_DPixel(object):
         im_c = left_spot_power * np.exp(-1j * 2 * np.pi / period * Xr) + \
                right_spot_power * np.exp(1j * 2 * np.pi / period * Xr) + central_spot_power
                
-               
-        self.Amplitude = np.abs(im_c)
-        self.Phase = np.angle(im_c)
+        if np.max(np.abs(im_c)) >= 1:
+            self.SLM_ampl = np.abs(im_c)/np.max(np.abs(im_c))
+        else:
+            self.SLM_ampl = np.abs(im_c)
+        self.SLM_phase = np.angle(im_c)
     
-    def focal_spots_multiple(self, central_spot_power, left_spot_power, right_spot_power, spacing, rotation):
+    def focal_spots_multiple(self, spot_power, spacing, rotation):
         
-        im_c = np.zeros(self.pixels_y, self.pixels_x)
+        self.im_c = np.zeros((self.pixels_y, self.pixels_x), dtype = 'complex')
         
-        for i in range(central_spot_power):
-            Y, X = np.mgrid[-self.pixels_y//2:self.pixels_y//2, self.pixels_x//2:self.pixels_x//2]
+        for i in range(len(spot_power)):
+            Y, X = np.mgrid[-self.pixels_y//2:self.pixels_y//2, -self.pixels_x//2:self.pixels_x//2]
             
-            Xr = np.cos(rotation / 180 * np.pi) * X + np.sin(rotation / 180 * np.pi) * Y
+            Xr = np.cos(rotation[i] / 180 * np.pi) * X + np.sin(rotation[i] / 180 * np.pi) * Y
             
-            period = self.pixels_x / spacing
+            if spacing[i] == 0:
+                temp_c = spot_power[i]
+            else:
+                period = self.pixels_x / spacing[i]
+                temp_c = spot_power[i] * np.exp(-1j * 2 * np.pi / period * Xr)
             
-            im_c += left_spot_power * np.exp(-1j * 2 * np.pi / period * Xr) + \
-                   right_spot_power * np.exp(1j * 2 * np.pi / period * Xr) + central_spot_power
+            self.im_c += temp_c
                    
-                   
-        self.Amplitude = np.abs(im_c)
-        self.Phase = np.angle(im_c)
+        if np.max(np.abs(self.im_c)) >= 1:
+            self.SLM_ampl = np.abs(self.im_c)/np.max(np.abs(self.im_c))
+        else:
+            self.SLM_ampl = np.abs(self.im_c)
+            
+        self.SLM_phase = np.angle(self.im_c) + np.pi
             

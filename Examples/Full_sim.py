@@ -1,26 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Mon Dec 12 11:16:18 2022
+Created on Mon Mar 27 11:17:08 2023
 
 @author: forrest
 """
+
 import matplotlib.pyplot as plt
 import numpy as np
 import poppy
 from poppy.poppy_core import PlaneType
 import astropy.units as u
 import astropy.io.fits as fits
-#from SLM_encoding_program import SLM_information
+#from lanternfiber import lanternfiber
+from skimage.transform import resize, rescale
 
 import os
 import sys
 
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(parent_dir)
-
 from SLM_encoding_program import SLM_DPixel
-
 
 pixels = 1024 # Number of Pixels for SLM
 
@@ -30,21 +28,20 @@ This section is responsible for determining all of the variables that should be 
 
 scale = 1
 diameter = scale * 10.0 * u.mm        # General diameter for the system
-f_len = scale * 100 * u.mm            # Focal Length for the two Lenses
+f_len = scale * 10 * u.mm            # Focal Length for the two Lenses
 wavelength = 1.55 * u.micron              # wavelength of light
 
 dim_slm = 17.40 * u.mm
-radian_shift = 2 * np.pi
-pix_per_super = 10
-
 total_pixels = pixels * u.pixel
 
-sp_r_high = scale * 250 * f_len * np.tan(np.arcsin(wavelength / diameter))
+e_diam_pixels = int(diameter / dim_slm * total_pixels.value) + 1
+
+sp_r_high = scale * 50 * f_len * np.tan(np.arcsin(wavelength / diameter))
 sp_r_low = scale * 2.5 * u.mm
 
-print(sp_r_high)
+#print('The radius of the spatial filter is: ' + str(sp_r_high))
 
-add_high = True
+add_high = False
 add_low = False
 
 add_lens_aperture_1 = False
@@ -57,42 +54,64 @@ lens2_to_detector = 1
 
 # This section controls the SLM settings
 
-gaussian_ampl = True
-flat_ampl = True
-random_ampl = True
+gaussian_ampl =   False
+flat_ampl =       False
+random_ampl =     False
 interprand_ampl = False
-focal_ampl = True
+focal_ampl =      False
 
-random_phase = True
+random_phase =     False
 interprand_phase = False
-zernike_phase = True
-flat_phase = True
+zernike_phase =    False
+flat_phase =       False
 
 interprand_both = False
 
-LP_MMF_encoding = True
+LP_MMF_encoding = False
+
+single_pair_spots =   False
+multiple_pair_spots = True
+
+# Single spot variables
+
+central = 1
+left = 1
+right = 1
+spacing = 20
+rotation = 0
+
+# Multiple spot variables
+
+power_mult =    [1, 1, 1, 1, 1]
+spacing_mult =  [0, 1 , 2, 3, 4]
+rotation_mult = [0, 5, 90, -90, 13]
+
+#LP modes variables
+
 N_modes = 54
-l = 3
+l = 2
 m = 2
 n_core = 1.44
-n_cladding = 1.4345
+n_cladding = 1.4345 # 1.4345
 make_odd = False
 
+detector_scale = dim_slm/(15*4*total_pixels)
+
 foldername = "/Dump"
-SLM_flat_ampl = 1
+SLM_flat_ampl = 0.5
 SLM_flat_phase = 1
 
 # Gaussian amplitude variables
 
 a = 1
-b = pixels/4 - 0.5
-c = 4 * pixels
+b = (diameter / dim_slm)* pixels/4 - 0.5
+c = 0.5 * pixels
 
 # List of Zernike terms (Noll index) and the scaling factors applied to each
 
-noll_index = [7]
-zern_scale = [4]
-zs_factor = 4
+noll_index = [4]
+zern_scale = [1]
+zs_factor = 1
 
 zs_sum = sum(zern_scale) / zs_factor
 
@@ -107,16 +126,14 @@ num_both = 100
 neighbors = 50
 
 #This section creates and writes what information should be encoded into the focal plane
-"""
-pixels_focal = pixels * diameter / dim_slm / 2
-pixels_focal = round(pixels_focal.value) + 1
-"""
 
-focal_pixels = 5*pixels
+# will look into making this a class/object
 
-fa_scale = dim_slm/(8*pixels)
+focal_pixels = pixels
+
+fa_scale = np.arcsin((1.22 * wavelength.to(u.m)) / dim_slm.to(u.m))
 focalArray = np.zeros((focal_pixels, focal_pixels), dtype = 'cfloat')
-
+"""
 cf = 0.1 * focal_pixels
 bf = focal_pixels/2 - 0.5 - 30
 square = 10
@@ -132,31 +149,35 @@ y,x = np.indices((focal_pixels,focal_pixels))
 
 r = np.sqrt((x- focal_pixels/2)**2 + (y- focal_pixels/2)**2)
 
-focalArray[r<=50] += 1 * np.exp(1j * 0 * np.pi)
+#makes a circle
+focalArray[r<50] += 1 * np.exp(1j * 0 * np.pi)
 
+# makes a square
 #focalArray[low:high, low:high] += 1
 
+# makes gaussians
 #for i in range(focal_pixels):
 #    for j in range(focal_pixels):
 #            focalArray[i,j] += 1*np.exp((-(i - bf)**2/cf) - ((j - bf)**2/cf)) * np.exp(1j * exp1phase)
 #            focalArray[i,j] += 1*np.exp((-(i - bf)**2/cf) - ((j - bf - 60)**2/cf)) * np.exp(1j * exp2phase)
-
+"""
 
 """
 This section is responsible for setting up the SLM
 """
 
+#SLM = SLM_information(pixels, pixels)
 D_pixel = SLM_DPixel(x_pixels = pixels,
                      y_pixels = pixels,
                      x_dim = dim_slm,
                      y_dim = dim_slm,
                      wavelength = wavelength,
-                     e_diam_pixels = int(diameter.to(u.m).value / dim_slm.to(u.m).value * total_pixels.value) + 1,
-                     focal_length= f_len,
-                     radian_shift = radian_shift,
+                     e_diam_pixels = e_diam_pixels,
+                     focal_length = f_len,
+                     radian_shift = 2*np.pi,
                      only_in_e_diam = True,
-                     pix_per_super = pix_per_super,
-                     less_than_2pi = False)       # Creates a double pixel object
+                     pix_per_super = 4,
+                     less_than_2pi = False)      # Creates a double pixel object
 
 # Applies a gaussian amplitude to the double pixel methood
 
@@ -174,17 +195,20 @@ if interprand_ampl == True:
 if focal_ampl == True:
     D_pixel.FocalPlaneImage(focalArray, fa_scale, fa_scale)
 if LP_MMF_encoding == True:
-    D_pixel.LPModeEncoding(N_modes, l, m, n_core, n_cladding, wavelength, make_odd, oversample = 4)
+    D_pixel.LPModeEncoding(N_modes, l, m, n_core, n_cladding, make_odd)
 
 if random_phase == True:
     D_pixel.RandomPhase()
-if interprand_phase ==True:
+if interprand_phase == True:
     D_pixel.InterpolateRandomPhase(num_phase, neighbors)
 if zernike_phase == True:
     D_pixel.ZernikeTerms(noll_index, zern_scaling)
 if flat_phase == True:
     D_pixel.FlatPhase(SLM_flat_phase)
-
+if single_pair_spots:
+    D_pixel.focal_spot(central, left, right, spacing, rotation)
+if multiple_pair_spots:
+    D_pixel.focal_spots_multiple(power_mult, spacing_mult, rotation_mult)
 
 opd = D_pixel.DoublePixelConvert()
 
@@ -202,38 +226,6 @@ Trans_scaled_opd = np.kron(Transformed_opd.value, np.ones((opd_scale,opd_scale))
 scaled_transmission = np.kron(transmission, np.ones((opd_scale, opd_scale)))
         
 
-# SLM plots
-
-f1 = plt.figure()
-plt.imshow(Trans_scaled_opd, cmap='bwr', interpolation='nearest')
-plt.title('SLM Encoded Information')
-plt.colorbar()
-plt.show()
-plt.pause(0.001)
-"""
-f1 = plt.figure()
-plt.imshow(D_pixel.Amplitude, cmap='bwr', interpolation='nearest')
-plt.title('SLM Encoded Information')
-plt.colorbar()
-plt.show()
-plt.pause(0.001)
-"""
-if focal_ampl == True:
-    f2 = plt.figure()
-    plt.imshow(D_pixel.transformPhase, cmap='twilight', interpolation='nearest')
-    plt.title('SLM Phase')
-    plt.colorbar()
-    plt.show()
-    plt.pause(0.001)
-    
-    f2 = plt.figure()
-    plt.imshow(D_pixel.transformAmpl, cmap='gist_heat', interpolation='nearest')
-    plt.title('SLM Amplitude')
-    plt.colorbar()
-    plt.show()
-    plt.pause(0.001)
-"""
-"""
 r_slm = (diameter.value/2) / (dim_slm.value * scale) * pixels
  
 frsys = poppy.FresnelOpticalSystem(name='Test', pupil_diameter=1 * dim_slm, beam_ratio = 2, npix = 1*total_pixels)             # Creating the system
@@ -317,142 +309,142 @@ else:
     frsys.add_optic(lens2, distance = 1 * f_len)
     nameList.append("Lens 2")
     
-frsys.add_optic(poppy.ScalarTransmission(planetype=PlaneType.image, name='Final Detector Plane'), distance = lens2_to_detector * f_len)
+frsys.add_optic(poppy.ScalarTransmission(planetype=PlaneType.image, name='Final Pupil Detector Plane'), distance = 1 * f_len)
 nameList.append("Pupil Plane Detector")
 
 frsys.add_optic(lens3, distance = 0 * u.m)
 nameList.append("Final Focus Lens")
-frsys.add_detector(pixelscale = 2 * u.micron / u.pixel, fov_pixels = 8000, distance = f_len)
+frsys.add_detector(pixelscale = detector_scale, fov_pixels = 4000, distance = f_len)
 nameList.append("Final Focal Plane Detector")
 
-#plt.figure(figsize=(18, 18))    # plots the system
 print("Fresnel Optical System {} wavelength of light".format(wavelength))
 
 #psf, waves = frsys.calc_psf(wavelength = wavelength, display_intermediates=True, return_intermediates=True)
 compl, inter = frsys.propagate(frwf, return_intermediates=True)
 
-print(compl)
-print(inter)
+#print(compl)
+#print(inter)
 
-# Plots the ampl, phase, and intensity of all of the optics onto the same figure
-
-"""
-
-fig, axes = plt.subplots(len(inter), 3, figsize=(10, 18))
-plt.title("Phase, Amplitude and Intensity at each of the Optics")
-for i in range(len(inter)):
-    
-    if inter[i].amplitude.max() >= 1:
-        int_vmax = 1
-    else:
-        int_vmax = inter[i].amplitude.max()
-    
-    im1 = axes[i, 0].imshow(inter[i].amplitude, vmin = inter[i].amplitude.min(), vmax = inter[i].amplitude.max(), cmap='gray')
-    plt.colorbar(im1, ax=axes[i, 0])
-
-    im2 = axes[i, 1].imshow(inter[i].phase, cmap='seismic')
-    plt.colorbar(im2, ax=axes[i, 1])
-    
-    if inter[i].intensity.max() >= 1:
-        int_vmax = 1
-    else:
-        int_vmax = inter[i].intensity.max()
-    
-    im3 = axes[i, 2].imshow(inter[i].intensity, vmin = inter[i].intensity.min(), vmax = int_vmax, cmap='gist_heat')
-    plt.colorbar(im3, ax=axes[i, 2])
-
-"""
+plt.figure(10)
+plt.title('SLM Desired Amplitude')
+plt.imshow(D_pixel.SLM_ampl)
+#plt.savefig('SLMDesiredAmpl.png', dpi = 800)
 plt.show()
-plt.pause(0.001)
 
-filepath = "/home/forrest/Pictures/SLM_Images"
+plt.figure(11)
+plt.title('SLM Desired Phase')
+plt.imshow(D_pixel.SLM_phase)
+#plt.savefig('SLMDesiredPhase.png', dpi = 800)
+plt.show()
 
-
-fig1 = plt.figure()
-plt.title('Phase at ' + nameList[1])
-plt.imshow(inter[1].phase, cmap='twilight')
+plt.figure(1)
+plt.title('The SLM Pattern')
+plt.imshow(D_pixel.SLM_encoded, cmap = 'jet')
 plt.colorbar()
-plt.savefig(fname = filepath + foldername + "/SLMPhase.png", dpi = 1000, format = "png")
-plt.show()
-plt.pause(0.001)
-
-
-fig5 = plt.figure()
-plt.title('Amplitude at ' + nameList[-3])
-plt.imshow(inter[-3].amplitude, cmap='gist_heat', vmin = 0, vmax = 1)
-plt.colorbar()
-plt.savefig(fname = filepath + foldername + "/FinalAmpl.png", dpi = 1000, format = "png")
-plt.show()
-plt.pause(0.001)
-
-fig1 = plt.figure()
-plt.title('Phase at ' + nameList[-3])
-plt.imshow(inter[-3].phase, cmap='twilight')
-plt.colorbar()
-plt.savefig(fname = filepath + foldername + "/FinalPhase.png", dpi = 1000, format = "png")
-plt.show()
-plt.pause(0.001)
-
-
-fig4 = plt.figure()
-for i in range(3, len(inter)):
-    plt.subplot(1, (len(inter) - 3), i-2)
-    plt.imshow(inter[i].intensity, vmin = 10**(-4), vmax = 1, cmap='gist_heat', norm = "log")
-    plt.colorbar()
-    plt.title(nameList[i])
-    
-plt.suptitle('Intensitys from SLM to Final Detector')
-plt.show()
-plt.pause(0.001)
-
-"""
-figfocal = plt.figure()
-plt.title('Intensity in the focal plane')
-if add_lens_aperture_1 == False:
-    inter[3].display(what = "intensity", vmin = 10**(-4), scale = "log", colorbar = True, showpadding = True)
-else:
-    inter[4].display(what  = "intensity", vmin = 10**(-4), scale = "log", colorbar = True, showpadding = True)
-
-plt.savefig(fname = filepath + foldername + "/FocalPlaneAmpl.png", dpi = 1000, format = "png")
+#plt.savefig('WhatsEncodedFullSim.png', dpi = 800)
 plt.show()
 plt.pause(0.001)
 """
-
-figfocal = plt.figure()
-
-if add_lens_aperture_1 == False:
-    plt.title('Intensity at ' + nameList[3])
-    plt.imshow(inter[3].intensity, cmap='gist_heat', vmin = 10**(-4), norm = "log")
-else:
-    plt.title('Intensity at ' + nameList[4])
-    plt.imshow(inter[4].intensity, cmap='gist_heat', vmin = 10**(-4), norm = "log")
-
-plt.colorbar()
+plt.figure(2)
+plt.imshow(D_pixel.Amplitude)
 plt.show()
 plt.pause(0.001)
+"""
+plt.figure(3)
+compl.display(what = "both", vmax = 5)
+
+plt.figure(4, figsize = (20,14))
+inter[-3].display(what = 'both', vmax_wfe = np.pi, colorbar = True, scale = 'log', use_angular_coordinates=False, imagecrop = 0.02)
+#plt.savefig('Virtual_Pupil_Plane.png', dpi = 400)
+
+PL_inject_ampl = compl.amplitude
+PL_inject_phase = compl.phase
+PL_inject_compl = PL_inject_ampl * np.exp(1j * PL_inject_phase)
+PL_inject_scale = detector_scale
+
+print(PL_inject_scale)
+
+lantern_r = D_pixel.a * u.m
+lantern_r = lantern_r.to(u.micron)
+
+max_r = 2 # Maximum radius to calculate mode field, where r=1 is the core diameter
+npix = 200 # Half-width of mode field calculation in pixels
+show_plots = True
+
+inp_pix_scale = PL_inject_scale.to(u.micron / u.pixel) / (lantern_r * 2 / npix) * u.pixel
+print(inp_pix_scale)
+plot_modefields = True
+save_image_sequences = False
+imseq_out_dir = './imseq/'
 
 
+"""
+### Make the fiber and modes
+f = lanternfiber(n_core, n_cladding, lantern_r.value, wavelength.value)
+f.find_fiber_modes()
+f.make_fiber_modes(npix=npix, show_plots=False, max_r=max_r)
+modes_to_measure = np.arange(f.nmodes)
+print(f.modelabels)
+# Plot all mode fields
+if plot_modefields:
+    plt.figure(4)
+    plt.clf()
+    nplots = len(f.allmodefields_rsoftorder) #7
+    zlim = 0.03
+    for k in range(nplots):
+        plt.subplot(6,6,k+1)
+        sz = f.max_r * f.core_radius
+        plt.imshow(f.allmodefields_rsoftorder[k], extent=(-sz, sz, -sz, sz), cmap='bwr',
+                   vmin=-zlim, vmax=zlim)
+        plt.xlabel('Position ($\mu$m)')
+        plt.ylabel('Position ($\mu$m)')
+        core_circle = plt.Circle((0,0), f.core_radius, color='k', fill=False, linestyle='--', alpha=0.5)
+        plt.gca().add_patch(core_circle)
+        plt.title(k)
+    # plt.tight_layout()
 
-fig6 = plt.figure()
-plt.title('Amplitude at ' + nameList[-1])
-plt.imshow(inter[-1].amplitude, cmap='gist_heat', vmin = 10**(-5), norm = "log")
-plt.colorbar()
-plt.savefig(fname = filepath + foldername + "/FinalAmplFocalPlane.png", dpi = 1000, format = "png")
+# Get input fields
+#input_cube = np.load(datapath+input_filename)
+
+x,y = np.indices((int(npix/inp_pix_scale*2), int(npix/inp_pix_scale*2)))
+
+inject_shape = np.shape(PL_inject_compl)
+print(inject_shape)
+#input_cube = np.zeros((2,inject_shape[0], inject_shape[1]))
+
+input_cube = PL_inject_compl #[0,:,:]
+
+#input_cube[1,:,:] = PL_inject_compl
+#n_flds = input_cube.shape[0]
+#n_flds = 1 ## For testing - just show first one
+k = 0
+#for k in range(n_flds):
+orig_field = input_cube#[k,:,:]
+resized_field_real = rescale(orig_field.real, inp_pix_scale)
+resized_field_imag = rescale(orig_field.imag, inp_pix_scale)
 plt.show()
+resized_field = resized_field_real + resized_field_imag*1j
+
+input_field = resized_field
+cnt = input_field.shape[1]//2
+input_field = input_field[cnt-f.npix:cnt+f.npix, cnt-f.npix:cnt+f.npix]
+
+
+f.input_field = input_field
+f.plot_injection_field(f.input_field, show_colorbar=False, logI=True, vmin=-3, fignum = 5)
 plt.pause(0.001)
 
-fig1 = plt.figure()
-plt.title('Phase at ' + nameList[3])
-plt.imshow(inter[3].phase, cmap='twilight')
-plt.colorbar()
-plt.savefig(fname = filepath + foldername + "/FinalPhase.png", dpi = 1000, format = "png")
-plt.show()
-plt.pause(0.001)
+if save_image_sequences:
+    fname = imseq_out_dir + 'injplot_%.3d' % k + '.png'
+    plt.savefig(fname, bbox_inches='tight', dpi=200)
 
-figx = plt.figure()
-inter[-1].display(what = "amplitude")
-plt.show
+coupling, mode_coupling, mode_coupling_complex = f.calc_injection_multi(mode_field_numbers=modes_to_measure,
+                                                 verbose=True, show_plots=True, fignum=6, complex=True, ylim=0.3)
+### The complex LP mode coefficients are in mode_coupling_complex.
 
-#plt.savefig('testimage.pdf')
+if save_image_sequences:
+    fname = imseq_out_dir + 'modeplot_%.3d' % k + '.png'
+    plt.savefig(fname, bbox_inches='tight', dpi=200)
 
-#frsys.describe()  # Describes the system
+plt.pause(0.5)
+"""
